@@ -10,6 +10,6 @@ Individual/Manual run scrape.py will process the current insider trading
 
 Option 2: 
 
-        Hosting the directory on a server will allow for scheduled runs scrape.py
+Hosting the directory on a server will allow for scheduled runs scrape.py
         to consitently process an store data in the directory. This can be done using
         CRON or task schduler. 
