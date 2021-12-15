@@ -3,6 +3,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import requests
+from os import path, mkdir
 
 MONTHS = {
     'January': 1,
@@ -58,31 +59,37 @@ class Scraper(object):
             new_df = self.df[self.df.index.month == month_code]
             new_df = new_df.reset_index()
             new_df = new_df.set_index(['Date', 'Ticker'])
+            year = self.year
             try:
-                if (month == 'December') and ('January' in months):
-                    old_df = pd.read_csv(
-                        f"Data/Insider_trans_{month}_{self.year - 1}.csv", index_col=['Date', 'Ticker'])
+                if (month == 'December') and 'January' in months:
+                    year -= 1
+                    old_df = pd.read_csv(f"Data/{(year)}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
                 else:
                     old_df = pd.read_csv(
-                        f"Data/Insider_trans_{month}_{self.year}.csv", index_col=['Date', 'Ticker'])
+                        f"Data/{year}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
                 df_combined = old_df.append(new_df)
                 df_combined = df_combined.drop_duplicates(keep='last')
                 df_combined.sort_index()
-                if month == 'December' and 'January' in months:
+                if (month == 'December') and ('January' in months):
                     df_combined.to_csv(
-                        f"Data/Insider_trans_{month}_{self.year - 1}.csv")
+                        f"Data/{year}/{month}_{year}.csv")
                 else:  # Handle decembers
                     df_combined.to_csv(
-                        f"Data/Insider_trans_{month}_{self.year}.csv")
+                        f"Data/{year}/{month}_{year}.csv")
 
             except FileNotFoundError as f:
+                dir = f"Data/{year}"
+                if not path.isdir(dir):
+                    mkdir(dir)
+
+
                 if (month == 'December') and ('January' in months):
                     new_df.to_csv(
-                        f"Data/Insider_trans_{month}_{self.year - 1}.csv")
+                        f"Data/{year}/{month}_{year}.csv")
 
                 else:
                     new_df.to_csv(
-                        f"Data/Insider_trans_{month}_{self.year}.csv")
+                        f"Data/{year}/{month}_{year}.csv")
 
     def __fix_dates(self):
         ind = self.df.loc[:, 'Date']
