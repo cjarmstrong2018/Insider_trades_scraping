@@ -3,6 +3,7 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 import re
+from os import path, mkdir
 
 
 class Scraper(object):
@@ -14,6 +15,7 @@ class Scraper(object):
             "X-Requested-With": "XMLHttpRequest"
         }
         self.transactions = []
+        self.df = None
 
     def crawl_tables(self):
         '''
@@ -31,7 +33,9 @@ class Scraper(object):
         while tbl_valid:
             tbl = soup.find_all('table')[-2]
             tags = tbl.find_all('a', string="[html]")
-            atags.extend(tags)
+            # Remove all form 4A entries, could change later
+            valid_tags = self.not_form4A(tags)
+            atags.extend(valid_tags)
             next_url_ext = soup.find(
                 "input", attrs={'type': "button", "value": "Next 100"})['onclick']
             next_url_ext = next_url_ext[18:-1]
@@ -41,6 +45,18 @@ class Scraper(object):
             num_tbls = soup.find_all('h1')
             tbl_valid = 1 if len(num_tbls) == 1 else 0
         return atags
+
+    def not_form4A(self, atags):
+        '''
+        Returns True if link is to a form 4 and False if it is to a form 4A
+        '''
+        valid = []
+        for tag in atags:
+            p = tag.parent
+            t = p.find('td').text
+            if t == '4':
+                valid.append(tag)
+        return valid
 
     def parse_atags(self, atags):
         '''
@@ -131,8 +147,52 @@ class Scraper(object):
         self.parse_atags(atags)
         df = pd.DataFrame(self.transactions, columns=[
                           'Date', 'Ticker', '# Shares', 'Price', 'Value'])
-        df = df.drop_duplicates()
-        print(df)
+        self.df = df.drop_duplicates()
+
+    def clean_df(self):
+        '''
+        Cleans the df that was just parsed before saving
+        '''
+
+    def split_by_month(self):
+        # get months
+        months = self.df.index.month_name().unique()
+        for month in months:
+            month_code = MONTHS[month]
+            new_df = self.df[self.df.index.month == month_code]
+            new_df = new_df.reset_index()
+            new_df = new_df.set_index(['Date', 'Ticker'])
+            year = self.year
+            try:
+                if (month == 'December') and 'January' in months:
+                    year -= 1
+                    old_df = pd.read_csv(
+                        f"Data/{(year)}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
+                else:
+                    old_df = pd.read_csv(
+                        f"Data/{year}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
+                df_combined = old_df.append(new_df)
+                df_combined = df_combined.drop_duplicates(keep='last')
+                df_combined.sort_index()
+                if (month == 'December') and ('January' in months):
+                    df_combined.to_csv(
+                        f"Data/{year}/{month}_{year}.csv")
+                else:  # Handle decembers
+                    df_combined.to_csv(
+                        f"Data/{year}/{month}_{year}.csv")
+
+            except FileNotFoundError as f:
+                dir = f"Data/{year}"
+                if not path.isdir(dir):
+                    mkdir(dir)
+
+                if (month == 'December') and ('January' in months):
+                    new_df.to_csv(
+                        f"Data/{year}/{month}_{year}.csv")
+
+                else:
+                    new_df.to_csv(
+                        f"Data/{year}/{month}_{year}.csv")
 
 
 if __name__ == '__main__':
