@@ -49,7 +49,11 @@ class Scraper(object):
         i = 0
         for tag in atags:
             form_soup = self.navigate_to_form4(tag)
-            self.parse_form4(form_soup)
+            try:
+                self.parse_form4(form_soup)
+            except Exception as e:
+                print('Error in :', tag['href'])
+                continue
             i += 1
             print(i)
 
@@ -105,7 +109,7 @@ class Scraper(object):
         date = df.loc[0, 'Date']
         df['Amount'] = df['Amount'].astype(str)
         df['Type'] = df['Type'].astype(str)
-        df['Price'] = df['Price'].str.extract(r'(\d+\.?\d+)')
+        df['Price'] = df['Price'].str.extract(r'(\d+\.?\d+)')  # FIX FIX FIX
         df['Price'] = pd.to_numeric(df['Price'])
         df['Price'] = df['Price'].fillna(0)
 
