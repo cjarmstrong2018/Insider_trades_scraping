@@ -1,9 +1,12 @@
 import pandas as pd
 import numpy as np
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import re
 from os import path, mkdir
+from datetime import datetime
 
 
 class Scraper(object):
@@ -14,6 +17,8 @@ class Scraper(object):
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.75 Safari/537.36",
             "X-Requested-With": "XMLHttpRequest"
         }
+        self.r = self._requests_retry_session()
+        self.most_recent_date = self.get_last_parsed_filing()
         self.transactions = []
         self.df = None
 
@@ -25,7 +30,7 @@ class Scraper(object):
         Returns: List of atags to be processed
         '''
         url = self.form_4_tbl
-        req = requests.get(url, headers=self.header)
+        req = self.r.get(url, headers=self.header)
         soup = BeautifulSoup(req.content, 'html.parser')
         num_tbls = soup.find_all('h1')
         tbl_valid = 1 if len(num_tbls) == 1 else 0
@@ -40,7 +45,7 @@ class Scraper(object):
                 "input", attrs={'type': "button", "value": "Next 100"})['onclick']
             next_url_ext = next_url_ext[18:-1]
             next_url = self.sec + next_url_ext
-            next_req = requests.get(next_url, headers=self.header)
+            next_req = self.r.get(next_url, headers=self.header)
             soup = BeautifulSoup(next_req.content, 'html.parser')
             num_tbls = soup.find_all('h1')
             tbl_valid = 1 if len(num_tbls) == 1 else 0
@@ -52,7 +57,7 @@ class Scraper(object):
         '''
         valid = []
         for tag in atags:
-            p = tag.parent
+            p = tag.parent.parent
             t = p.find('td').text
             if t == '4':
                 valid.append(tag)
@@ -67,8 +72,11 @@ class Scraper(object):
             form_soup = self.navigate_to_form4(tag)
             try:
                 self.parse_form4(form_soup)
+            except ConnectionError:
+                print('Connection Error...\n Retry')
             except Exception as e:
                 print('Error in :', tag['href'])
+                print(e)
                 continue
             i += 1
             print(i)
@@ -82,7 +90,7 @@ class Scraper(object):
             form_req (request) - request object of the Form 4 filing
         '''
         next_url = self.sec + atag['href']
-        next_req = requests.get(next_url, headers=self.header)
+        next_req = self.r.get(next_url, headers=self.header)
         next_soup = BeautifulSoup(next_req.content, 'html.parser')
         ext = None
         tds = next_soup.find_all('td', scope='row')
@@ -92,7 +100,7 @@ class Scraper(object):
                 break
         # final form
         form_url = self.sec + ext
-        form_req = requests.get(form_url, headers=self.header)
+        form_req = self.r.get(form_url, headers=self.header)
         return form_req
 
     def parse_form4(self, form_req):
@@ -122,10 +130,10 @@ class Scraper(object):
         # if not derivs.empty:
         #     continue
         # grab date
-        date = df.loc[0, 'Date']
+        date = self.find_date(form_soup, df)
         df['Amount'] = df['Amount'].astype(str)
         df['Type'] = df['Type'].astype(str)
-        df['Price'] = df['Price'].str.extract(r'(\d+\.?\d+)')  # FIX FIX FIX
+        df['Price'] = df['Price'].str.extract(r'(\d+\.?\d+)')
         df['Price'] = pd.to_numeric(df['Price'])
         df['Price'] = df['Price'].fillna(0)
 
@@ -142,59 +150,116 @@ class Scraper(object):
                 df['Price'].mean(), df['Value'].sum())
         self.transactions.append(form)
 
+    def find_date(self, form_soup, df):
+        '''
+        Searches soup for the filing date, if none provided, use earliest transaction date
+        Inputs:
+            form_soup - (Soup) soup object from form 4
+            df - (DataFrame) Table 1 of the  
+        Returns: datetime object 
+        '''
+        form_data = form_soup.find_all('span', attrs={'class': 'FormData'})
+        try:
+            date = form_data[-1].text
+            date = re.match(r'(\d{1,2})/(\d{1,2})/(\d{1,4})', date)
+            date = datetime.strptime(date, '%b/%d/%Y')
+        except Exception:
+            date = df.loc[0, 'Date']
+        return date
+
     def create_df(self):
         atags = self.crawl_tables()
         self.parse_atags(atags)
-        df = pd.DataFrame(self.transactions, columns=[
-                          'Date', 'Ticker', '# Shares', 'Price', 'Value'])
-        self.df = df.drop_duplicates()
+        self.df = pd.DataFrame(self.transactions, columns=[
+            'Date', 'Ticker', '# Shares', 'Price', 'Value'])
 
     def clean_df(self):
         '''
         Cleans the df that was just parsed before saving
         '''
+        self.df = self.df.drop_duplicates()
+        self.df['Date'] = pd.to_datetime(
+            self.df['Date'], infer_datetime_format=True)
+        self.df = self.df.set_index(['Date', 'Ticker'])
+        self.df = self.df.sort_index()
+        print(self.df)
 
-    def split_by_month(self):
-        # get months
-        months = self.df.index.month_name().unique()
-        for month in months:
-            month_code = MONTHS[month]
-            new_df = self.df[self.df.index.month == month_code]
-            new_df = new_df.reset_index()
-            new_df = new_df.set_index(['Date', 'Ticker'])
-            year = self.year
-            try:
-                if (month == 'December') and 'January' in months:
-                    year -= 1
-                    old_df = pd.read_csv(
-                        f"Data/{(year)}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
-                else:
-                    old_df = pd.read_csv(
-                        f"Data/{year}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
-                df_combined = old_df.append(new_df)
-                df_combined = df_combined.drop_duplicates(keep='last')
-                df_combined.sort_index()
-                if (month == 'December') and ('January' in months):
-                    df_combined.to_csv(
-                        f"Data/{year}/{month}_{year}.csv")
-                else:  # Handle decembers
-                    df_combined.to_csv(
-                        f"Data/{year}/{month}_{year}.csv")
+    def get_last_parsed_filing(self):
+        '''
+        Reads date.txt file that holds the filing time of the
+        most recently parsed entry
+        Returns: datetime object
+        '''
+        if path.exists("date.txt"):
+            with open('date.txt', 'r') as f:
+                date = f.readline()
+                date = datetime.strptime(date, '%Y-%b-%d %H:%M:%S')
+        else:
+            date = datetime.fromtimestamp(0)
+            print(date)
+        return date
 
-            except FileNotFoundError as f:
-                dir = f"Data/{year}"
-                if not path.isdir(dir):
-                    mkdir(dir)
+    def _requests_retry_session(self,
+                                retries=3,
+                                backoff_factor=0.3,
+                                status_forcelist=(500, 502, 504),
+                                session=None,
+                                ):
+        session = session or requests.Session()
+        retry = Retry(
+            total=retries,
+            read=retries,
+            connect=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=status_forcelist,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
 
-                if (month == 'December') and ('January' in months):
-                    new_df.to_csv(
-                        f"Data/{year}/{month}_{year}.csv")
+        # def split_by_month(self):
+        #     # get months
+        #     months = self.df.index.month_name().unique()
+        #     for month in months:
+        #         month_code = MONTHS[month]
+        #         new_df = self.df[self.df.index.month == month_code]
+        #         new_df = new_df.reset_index()
+        #         new_df = new_df.set_index(['Date', 'Ticker'])
+        #         year = self.year
+        #         try:
+        #             if (month == 'December') and 'January' in months:
+        #                 year -= 1
+        #                 old_df = pd.read_csv(
+        #                     f"Data/{(year)}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
+        #             else:
+        #                 old_df = pd.read_csv(
+        #                     f"Data/{year}/{month}_{year}.csv", index_col=['Date', 'Ticker'])
+        #             df_combined = old_df.append(new_df)
+        #             df_combined = df_combined.drop_duplicates(keep='last')
+        #             df_combined.sort_index()
+        #             if (month == 'December') and ('January' in months):
+        #                 df_combined.to_csv(
+        #                     f"Data/{year}/{month}_{year}.csv")
+        #             else:  # Handle decembers
+        #                 df_combined.to_csv(
+        #                     f"Data/{year}/{month}_{year}.csv")
 
-                else:
-                    new_df.to_csv(
-                        f"Data/{year}/{month}_{year}.csv")
+        #         except FileNotFoundError as f:
+        #             dir = f"Data/{year}"
+        #             if not path.isdir(dir):
+        #                 mkdir(dir)
+
+        #             if (month == 'December') and ('January' in months):
+        #                 new_df.to_csv(
+        #                     f"Data/{year}/{month}_{year}.csv")
+
+        #             else:
+        #                 new_df.to_csv(
+        #                     f"Data/{year}/{month}_{year}.csv")
 
 
 if __name__ == '__main__':
     scrape = Scraper()
     scrape.create_df()
+    scrape.clean_df()
