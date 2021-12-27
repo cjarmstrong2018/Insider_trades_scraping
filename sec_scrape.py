@@ -69,6 +69,8 @@ class Scraper(object):
         '''
         i = 0
         for tag in atags:
+            self.get_filing_time(tag)
+            quit()
             form_soup = self.navigate_to_form4(tag)
             try:
                 self.parse_form4(form_soup)
@@ -257,6 +259,31 @@ class Scraper(object):
         #             else:
         #                 new_df.to_csv(
         #                     f"Data/{year}/{month}_{year}.csv")
+
+    '''
+    //TODO FINISH THiS FUNC
+    '''
+
+    def get_filing_time(self, atag):
+        '''
+        Navigates from <atag> to filing timestamp to
+        self.most_recent_date, returns True if new and 
+        False, otherwise.
+        Input: 
+            atag - a tag link to form4
+        Returns - (Bool)
+        '''
+        parent = atag.parent
+        # Navigate to correct tag and select text
+        accepted = parent.next_sibling.next_sibling
+        accepted = accepted.next_sibling.next_sibling
+        accepted = accepted.get_text(separator=" ")
+        print(accepted)
+        # parse date
+        accepted_date = datetime.strptime(accepted, '%Y-%m-%d %H:%M:%S')
+        # for i in accepted:
+        #     print(i)
+        print(accepted_date)
 
 
 if __name__ == '__main__':
