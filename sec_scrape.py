@@ -19,6 +19,7 @@ class Scraper(object):
         }
         self.r = self._requests_retry_session()
         self.most_recent_date = self.get_last_parsed_filing()
+        self.new_recent_filing = None
         self.transactions = []
         self.df = None
 
@@ -69,11 +70,17 @@ class Scraper(object):
         '''
         i = 0
         for tag in atags:
-            self.get_filing_time(tag)
-            quit()
-            form_soup = self.navigate_to_form4(tag)
+            time = self.get_filing_time(tag)
+            # saves most recent filing time
+            if i == 0:
+                self.new_recent_filing = time
+            # prevents double counting filings
+            if time < self.most_recent_date:
+                print("Reached most recent filing, Done!")
+                break
             try:
-                self.parse_form4(form_soup)
+                form_soup = self.navigate_to_form4(tag)
+                self.parse_form4(form_soup, time)
             except ConnectionError:
                 print('Connection Error...\n Retry')
             except Exception as e:
@@ -81,6 +88,8 @@ class Scraper(object):
                 print(e)
                 continue
             i += 1
+            if i == 25:
+                break
             print(i)
 
     def navigate_to_form4(self, atag):
@@ -105,7 +114,7 @@ class Scraper(object):
         form_req = self.r.get(form_url, headers=self.header)
         return form_req
 
-    def parse_form4(self, form_req):
+    def parse_form4(self, form_req, datetime):
         '''
         Parse Form 4 filing to extract insider trade information
         Inputs: 
@@ -132,7 +141,7 @@ class Scraper(object):
         # if not derivs.empty:
         #     continue
         # grab date
-        date = self.find_date(form_soup, df)
+        date = datetime.date()
         df['Amount'] = df['Amount'].astype(str)
         df['Type'] = df['Type'].astype(str)
         df['Price'] = df['Price'].str.extract(r'(\d+\.?\d+)')
@@ -174,16 +183,24 @@ class Scraper(object):
         self.parse_atags(atags)
         self.df = pd.DataFrame(self.transactions, columns=[
             'Date', 'Ticker', '# Shares', 'Price', 'Value'])
+        """
+        TODO Fix the groupby function of this to save properly
+        """
 
     def clean_df(self):
         '''
         Cleans the df that was just parsed before saving
         '''
         self.df = self.df.drop_duplicates()
-        self.df['Date'] = pd.to_datetime(
-            self.df['Date'], infer_datetime_format=True)
+        self.df['Date'] = pd.to_datetime(self.df['Date'])
+        # self.df['Date'] = pd.to_datetime(
+        #     self.df['Date'], infer_datetime_format=True)
+        # self.df = self.df.loc[:, ['# Shares', 'Value ($)']]
         self.df = self.df.set_index(['Date', 'Ticker'])
+        self.df = self.df.groupby(level=1).sum()
+        # self.df = self.df.reset_index()
         self.df = self.df.sort_index()
+
         print(self.df)
 
     def get_last_parsed_filing(self):
@@ -195,10 +212,9 @@ class Scraper(object):
         if path.exists("date.txt"):
             with open('date.txt', 'r') as f:
                 date = f.readline()
-                date = datetime.strptime(date, '%Y-%b-%d %H:%M:%S')
+                date = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
         else:
             date = datetime.fromtimestamp(0)
-            print(date)
         return date
 
     def _requests_retry_session(self,
@@ -259,34 +275,46 @@ class Scraper(object):
         #             else:
         #                 new_df.to_csv(
         #                     f"Data/{year}/{month}_{year}.csv")
-
-    '''
-    //TODO FINISH THiS FUNC
-    '''
-
     def get_filing_time(self, atag):
         '''
-        Navigates from <atag> to filing timestamp to
-        self.most_recent_date, returns True if new and 
-        False, otherwise.
+        Navigates from <atag> to filing timestamp 
         Input: 
             atag - a tag link to form4
-        Returns - (Bool)
+        Returns - DateTime object
         '''
         parent = atag.parent
         # Navigate to correct tag and select text
         accepted = parent.next_sibling.next_sibling
         accepted = accepted.next_sibling.next_sibling
         accepted = accepted.get_text(separator=" ")
-        print(accepted)
         # parse date
         accepted_date = datetime.strptime(accepted, '%Y-%m-%d %H:%M:%S')
-        # for i in accepted:
-        #     print(i)
-        print(accepted_date)
+        return accepted_date
+
+    def save_most_recent_filing_time(self):
+        '''
+        Saves the most recent filing time in date.txt
+        Creates a new file if it does not exist
+        Returns: None
+        '''
+        to_write = self.most_recent_date.strftime("%Y-%m-%d %H:%M:%S")
+        with open('date.txt', 'w+') as f:
+            f.write(to_write)
+
+    def split_by_month(self):
+        g = self.df.groupby(pd.Grouper(freq='M'))
+        dfs = [group for _, group in g]
+        for df in dfs:
+            print(df)
+    # def save_in_dfs(self):
+    #     '''
+
+    #     '''
 
 
 if __name__ == '__main__':
     scrape = Scraper()
     scrape.create_df()
     scrape.clean_df()
+    scrape.split_by_month()
+    # scrape.save_most_recent_filing_time()
