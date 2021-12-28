@@ -1,3 +1,4 @@
+from genericpath import exists
 import pandas as pd
 import numpy as np
 import requests
@@ -7,6 +8,7 @@ from bs4 import BeautifulSoup
 import re
 from os import path, mkdir
 from datetime import datetime
+import calendar
 
 
 class Scraper(object):
@@ -22,6 +24,21 @@ class Scraper(object):
         self.new_recent_filing = None
         self.transactions = []
         self.df = None
+        if not path.isdir("Data"):
+            mkdir("Data")
+
+    def run(self):
+        print("Beginning to scrape filings")
+        print("================================================================")
+        self.create_df()
+        print("Data gathered...")
+        print("================================================================")
+        print("Cleaning data...")
+        self.clean_df()
+        print("Saving Data")
+        self.split_and_save()
+        self.save_most_recent_filing_time()
+        print("Done!")
 
     def crawl_tables(self):
         '''
@@ -75,7 +92,7 @@ class Scraper(object):
             if i == 0:
                 self.new_recent_filing = time
             # prevents double counting filings
-            if time < self.most_recent_date:
+            if time <= self.most_recent_date:
                 print("Reached most recent filing, Done!")
                 break
             try:
@@ -85,19 +102,17 @@ class Scraper(object):
                 print('Connection Error...\n Retry')
             except Exception as e:
                 print('Error in :', tag['href'])
-                print(e)
                 continue
             i += 1
-            if i == 25:
-                break
-            print(i)
+            if i % 100 == 0:
+                print(i)
 
     def navigate_to_form4(self, atag):
         '''
         Given an atag, navigate to the form 4 filing
-        Inputs: 
+        Inputs:
             atag - (tag) atag with href to each filing
-        Returns: 
+        Returns:
             form_req (request) - request object of the Form 4 filing
         '''
         next_url = self.sec + atag['href']
@@ -117,11 +132,11 @@ class Scraper(object):
     def parse_form4(self, form_req, datetime):
         '''
         Parse Form 4 filing to extract insider trade information
-        Inputs: 
+        Inputs:
             form_soup - (soup object) soup object of the form 4 filing
-        Returns: 
+        Returns:
             Nothing - appends tuple to self.transactions for creation of df
-            form is (date, ticker, # shares, price, total value) 
+            form is (date, ticker, # shares, price, total value)
         '''
         form_soup = BeautifulSoup(form_req.content, 'html.parser')
         # Find Ticker
@@ -166,8 +181,8 @@ class Scraper(object):
         Searches soup for the filing date, if none provided, use earliest transaction date
         Inputs:
             form_soup - (Soup) soup object from form 4
-            df - (DataFrame) Table 1 of the  
-        Returns: datetime object 
+            df - (DataFrame) Table 1 of the
+        Returns: datetime object
         '''
         form_data = form_soup.find_all('span', attrs={'class': 'FormData'})
         try:
@@ -180,12 +195,11 @@ class Scraper(object):
 
     def create_df(self):
         atags = self.crawl_tables()
+        print("Filing paths gathered...parsing form 4s now")
+        print("================================================================")
         self.parse_atags(atags)
         self.df = pd.DataFrame(self.transactions, columns=[
             'Date', 'Ticker', '# Shares', 'Price', 'Value'])
-        """
-        TODO Fix the groupby function of this to save properly
-        """
 
     def clean_df(self):
         '''
@@ -197,11 +211,13 @@ class Scraper(object):
         #     self.df['Date'], infer_datetime_format=True)
         # self.df = self.df.loc[:, ['# Shares', 'Value ($)']]
         self.df = self.df.set_index(['Date', 'Ticker'])
-        self.df = self.df.groupby(level=1).sum()
-        # self.df = self.df.reset_index()
-        self.df = self.df.sort_index()
 
-        print(self.df)
+        price = self.df.loc[:, "Price"]
+        to_sum = self.df.loc[:, ["# Shares", "Value"]]
+        price = price.groupby(['Date', 'Ticker']).mean()
+        to_sum = to_sum.groupby(['Date', 'Ticker']).sum()
+        self.df = pd.concat([to_sum, price], axis=1)
+        self.df = self.df.sort_index()
 
     def get_last_parsed_filing(self):
         '''
@@ -277,8 +293,8 @@ class Scraper(object):
         #                     f"Data/{year}/{month}_{year}.csv")
     def get_filing_time(self, atag):
         '''
-        Navigates from <atag> to filing timestamp 
-        Input: 
+        Navigates from <atag> to filing timestamp
+        Input:
             atag - a tag link to form4
         Returns - DateTime object
         '''
@@ -297,24 +313,43 @@ class Scraper(object):
         Creates a new file if it does not exist
         Returns: None
         '''
-        to_write = self.most_recent_date.strftime("%Y-%m-%d %H:%M:%S")
+        to_write = self.new_recent_filing.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Saving {to_write} as most recent")
         with open('date.txt', 'w+') as f:
             f.write(to_write)
 
-    def split_by_month(self):
+    def split_and_save(self):
+        self.df = self.df.reset_index(level=1, drop=False)
         g = self.df.groupby(pd.Grouper(freq='M'))
         dfs = [group for _, group in g]
-        for df in dfs:
-            print(df)
-    # def save_in_dfs(self):
-    #     '''
+        self.save_dfs(dfs)
 
-    #     '''
+    def save_dfs(self, dfs):
+        '''
+        Saves each df in the proper location
+        '''
+        for df in dfs:
+            date = df.index[0]
+            month = date.month
+            month = calendar.month_name[month]
+            year = date.year
+            dir = f"Data/{year}"
+            if not path.isdir(dir):
+                mkdir(dir)
+            csv_path = f"Data/{year}/{month}_{year}.csv"
+            if path.exists(csv_path):
+                old_df = pd.read_csv(csv_path, index_col="Date")
+                combined = pd.concat([df, old_df])
+                combined = combined.reset_index(drop=False)
+                price = combined.loc[:, ['Date', 'Ticker', 'Price']]
+                to_sum = combined.loc[:, [
+                    'Date', 'Ticker', "# Shares", "Value"]]
+                price = price.groupby(['Date', 'Ticker']).mean()
+                to_sum = to_sum.groupby(['Date', 'Ticker']).sum()
+                df = pd.concat([to_sum, price], axis=1)
+                df = df.reset_index(level=1, drop=False)
+            df.to_csv(csv_path)
 
 
 if __name__ == '__main__':
-    scrape = Scraper()
-    scrape.create_df()
-    scrape.clean_df()
-    scrape.split_by_month()
-    # scrape.save_most_recent_filing_time()
+    scrape = Scraper().run()
